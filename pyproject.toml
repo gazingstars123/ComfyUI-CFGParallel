@@ -1,0 +1,13 @@
+[project]
+name = "ComfyUI-CFGParallel"
+description = "Parallel CFG processing for ComfyUI using model replication across 2 GPUs"
+version = "1.0.0"
+license = { file = "LICENSE.txt" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/gazingstars123/ComfyUI-CFGParallel"
+
+[tool.comfy]
+PublisherId = "gazingstars"
+DisplayName = "ComfyUI-CFGParallel"
