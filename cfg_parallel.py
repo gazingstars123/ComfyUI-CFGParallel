@@ -54,6 +54,9 @@ class CfgParallel:
             "required": {
                 "model": ("MODEL",),
                 "secondary_device": (devices, {"default": devices[-1] if len(devices) > 1 else devices[0]}),
+            },
+            "optional": {
+                "disable_dynamic_vram": ("BOOLEAN", {"default": True, "tooltip": "Disable dynamic VRAM on the model. Recommended on with torch.compile or dynamic weight changes such as LoRA."}),
             }
         }
 
@@ -62,9 +65,17 @@ class CfgParallel:
     CATEGORY = "sampling/parallel"
     DESCRIPTION = "Runs positive conditioning on primary GPU and negative conditioning on a secondary GPU simultaneously. For torch.compile support, place this node AFTER TorchCompileModel in the chain."
 
-    def setup(self, model, secondary_device):
+    def setup(self, model, secondary_device, disable_dynamic_vram=False):
         secondary_device = torch.device(secondary_device)
-        cloned = model.clone()
+        if disable_dynamic_vram:
+            try:
+                cloned = model.clone(disable_dynamic=True)
+                logger.info("CFG Parallel: dynamic VRAM disabled")
+            except TypeError:
+                logger.warning("CFG Parallel: this ComfyUI version does not support disable_dynamic, using normal clone")
+                cloned = model.clone()
+        else:
+            cloned = model.clone()
 
         base_model = cloned.model
         diffusion_model = base_model.diffusion_model
@@ -85,19 +96,14 @@ class CfgParallel:
             "weights_synced": False,
             "compile_kwargs": compile_kwargs,
             "gen_id": 0,
+            "last_synced_hooks": object(),  # sentinel, guarantees first sync
         }
 
         # Weakref to base_model to avoid circular reference
         base_model_ref = weakref.ref(base_model)
 
-        def _sync_weights():
-            """Copy patched weights from primary to secondary model.
-
-            Called lazily on the first wrapper invocation, at which point
-            ComfyUI has already applied LoRA patches to the primary model.
-            """
-            if _state["weights_synced"]:
-                return
+        def _copy_weights_to_secondary():
+            """Copy current weights from primary diffusion model to secondary."""
             sec = _state.get("secondary_diff_model")
             if sec is None:
                 return
@@ -108,9 +114,19 @@ class CfgParallel:
                 if key in src_sd:
                     sec_sd[key].copy_(src_sd[key].to(sec_sd[key].device))
                     updated += 1
-            # Apply torch.compile to secondary model
+            return updated
+
+        def _sync_weights():
+            """Initial sync: copy weights and apply torch.compile (one-time)."""
+            if _state["weights_synced"]:
+                return
+            updated = _copy_weights_to_secondary()
+            if updated is None:
+                return
+            # Apply torch.compile to secondary model (one-time)
+            sec = _state.get("secondary_diff_model")
             ckw = _state.get("compile_kwargs")
-            if ckw is not None:
+            if ckw is not None and sec is not None:
                 compile_args = {k: v for k, v in ckw.items()}
                 layer_types = ["double_blocks", "single_blocks", "layers",
                                "transformer_blocks", "blocks"]
@@ -130,6 +146,15 @@ class CfgParallel:
 
             _state["weights_synced"] = True
             logger.info(f"  Synced {updated} weight tensors to secondary model")
+
+        def _resync_if_hooks_changed():
+            """Re-sync weights when ComfyUI hooks have modified the primary model."""
+            current_hooks = getattr(cloned, 'current_hooks', None)
+            if current_hooks is not _state["last_synced_hooks"]:
+                updated = _copy_weights_to_secondary()
+                _state["last_synced_hooks"] = current_hooks
+                if updated:
+                    logger.info(f"  Re-synced {updated} weight tensors (hooks changed)")
 
         def secondary_apply_model(x, t, c_concat=None, c_crossattn=None, control=None, transformer_options={}, **kwargs):
             sec = _state.get("secondary_diff_model")
@@ -229,8 +254,9 @@ class CfgParallel:
             if _state.get("secondary_diff_model") is None:
                 return apply_model_func(input_x, timestep, **c)
 
-            # Lazy sync
+            # Lazy initial sync + re-sync if hooks changed weights
             _sync_weights()
+            _resync_if_hooks_changed()
 
             cond_indices = [i for i, v in enumerate(cond_or_uncond) if v == 0]
             uncond_indices = [i for i, v in enumerate(cond_or_uncond) if v == 1]
