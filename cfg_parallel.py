@@ -515,7 +515,7 @@ class CfgParallel:
                         return torch.zeros_like(input_x)
                     else:
                         # Second+ cond at same sigma → area conditioning detected
-                        # Abort deferred mode, wait for first cond result, run sequentially
+                        # wait for first cond result, run sequentially
                         state.deferred_cond_count += 1
 
                         if state.deferred_cond_count == 2 and state.deferred_cond_future is not None:
@@ -530,10 +530,6 @@ class CfgParallel:
                                 raise result
                             state.deferred_mode = False
                             state.deferred_cond_future = None
-                            # Return the first cond result we waited for? No — that was for
-                            # the FIRST cond call which already returned a dummy zero.
-                            # ComfyUI has already used the dummy. We can't fix it retroactively.
-                            # For area conditioning, just fall through to sequential from now on.
 
                         # Run this cond call sequentially on primary
                         return apply_model_func(input_x, timestep, **c)
