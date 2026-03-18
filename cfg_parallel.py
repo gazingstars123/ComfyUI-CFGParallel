@@ -368,9 +368,8 @@ class CfgParallel:
     DESCRIPTION = "Runs positive conditioning on primary GPU and negative conditioning on a secondary GPU simultaneously. For torch.compile support, place this node AFTER TorchCompileModel in the chain."
 
     @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        # Force re-execution when any option changes (verbose_debug, disable_dynamic_vram, etc.)
-        return float("NaN")
+    def IS_CHANGED(cls, model=None, secondary_device="", disable_dynamic_vram=False, verbose_debug=False, **kwargs):
+        return f"{secondary_device}_{disable_dynamic_vram}_{verbose_debug}"
 
     def setup(self, model, secondary_device, disable_dynamic_vram=False, verbose_debug=False):
         logger.info(f"CFG Parallel: setup called | disable_dynamic_vram={disable_dynamic_vram} verbose_debug={verbose_debug}")
